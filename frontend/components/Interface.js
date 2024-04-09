@@ -2,8 +2,11 @@ import React, { useState } from 'react';
 import $u from '../utils/$u';
 import { ethers } from "ethers";
 
+// 0xc2aE68c05EF10B4c74decB43558B44Bfaa085c2d
+// 0x1DCCB25d084f0cb830B2C6a477F933BA8150f0D8
+// 0x5523A2621d152D579BBae3E461fF789417d565Be
 const wc  = require("../circuit/witness_calculator.js");
-const tornadoAddress = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0";
+const tornadoAddress = "0x5523A2621d152D579BBae3E461fF789417d565Be";
 const tornadoJSON = require("../json/Tornado.json");
 const tornadoABI = tornadoJSON.abi; 
 const tornadoInterface = new ethers.utils.Interface(tornadoABI);
@@ -14,7 +17,11 @@ const Interface = () => {
     const [proofElements, updateProofElements] = useState(null); 
     const [proofStringEl, updateProofStringEl] = useState(null); 
     const [textArea, updateTextArea] = useState(null); 
-    
+    const [displayCopiedMessage, updateDisplayCopiedMessage] = useState(false); 
+    const [withdrawalSuccessfull, updateWithdrawalSuccessfull] = useState(false); 
+    const [section, updateSection] = useState("Deposit");
+
+
     const connectMetamask = async () => {
         try{
             if(!window.ethereum){
@@ -26,7 +33,7 @@ const Interface = () => {
             var activeAccount = accounts[0];
             var balance = await window.ethereum.request({method: "eth_getBalance", params: [activeAccount, "latest"]});
             balance = $u.moveDecimalLeft(ethers.BigNumber.from(balance).toString(), 18);
-
+ 
             var newAccountState = {
                 chainId: chainId,
                 address: activeAccount,
@@ -75,18 +82,24 @@ const Interface = () => {
             const txHash = await window.ethereum.request({ method: "eth_sendTransaction", params: [tx] });
 
             console.log(txHash);
-            const receipt = await window.ethereum.request({ method: "eth_getTransactionReceipt", params: [txHash] });
-            const log = receipt.logs[0];
-            const decodedData = tornadoInterface.decodeEventLog("Deposit", log.data, log.topics);
+            // var receipt;
+            // while(!receipt){
+            //     receipt = await window.ethereum.request({ method: "eth_getTransactionReceipt", params: [txHash] });
+            //     await new Promise((resolve, reject) => { setTimeout(resolve, 1000); });
+            // }
+            
+            // const log = receipt.logs[0];
+            // const decodedData = tornadoInterface.decodeEventLog("Deposit", log.data, log.topics);
             
             const proofElements = {
-                root: $u.BNToDecimal(decodedData.root),
                 nullifierHash: `${nullifierHash}`,
                 secret: secret,
                 nullifier: nullifier,
                 commitment: `${commitment}`,
-                hashPairings: decodedData.hashPairings.map((n) => ($u.BNToDecimal(n))),
-                hashDirections: decodedData.pairDirection
+                txHash: txHash
+                // hashPairings: decodedData.hashPairings.map((n) => ($u.BNToDecimal(n))),
+                // hashDirections: decodedData.pairDirection,
+                // root: $u.BNToDecimal(decodedData.root)
             };
             
             updateProofElements(btoa(JSON.stringify(proofElements)));
@@ -96,9 +109,17 @@ const Interface = () => {
     }
 
     const copyProof = () => {
+        flashCopiedMessage();
         if(proofStringEl)
             navigator.clipboard.writeText(proofStringEl.innerHTML);
 
+    }
+
+    const flashCopiedMessage = async () => {
+        updateDisplayCopiedMessage(true);
+        setTimeout(() => {
+            updateDisplayCopiedMessage(false);
+        }, 1000);
     }
 
     const withdraw = async () => {
@@ -108,14 +129,23 @@ const Interface = () => {
             const proofElements = JSON.parse(atob(proofString));
             const SnarkJS = window['snarkjs'];
 
+            var receipt = await window.ethereum.request({ method: "eth_getTransactionReceipt", params: [proofElements.txHash] });
+
+            if(!receipt)
+                throw new Error("empty receipt!");
+             
+            
+            const log = receipt.logs[0];
+            const decodedData = tornadoInterface.decodeEventLog("Deposit", log.data, log.topics);
+
             const proofInput = {
-                "root": proofElements.root,
+                "root": $u.BNToDecimal(decodedData.root),
                 "nullifierHash": proofElements.nullifierHash,
                 "recipient": $u.BNToDecimal(account.address),
                 "secret": $u.BN256ToBin(proofElements.secret).split(""),
                 "nullifier": $u.BN256ToBin(proofElements.nullifier).split(""),
-                "hashPairings": proofElements.hashPairings,
-                "hashDirections": proofElements.hashDirections,
+                "hashPairings": decodedData.hashPairings.map((n) => ($u.BNToDecimal(n))),
+                "hashDirections": decodedData.pairDirection,
             };
 
             const { proof, publicSignals } = await SnarkJS.groth16.fullProve(proofInput, "/finale/withdraw.wasm", "/finale/setup_final.zkey");
@@ -133,9 +163,11 @@ const Interface = () => {
                 data: callData
             };
             const txHash = await window.ethereum.request({ method: "eth_sendTransaction", params: [tx] });
-            const receipt = await window.ethereum.request({ method: "eth_getTransactionReceipt", params: [txHash] });
-            console.log(`Receipt of Withdrawal!`);
-            console.log(receipt);
+            const receipt2 = await window.ethereum.request({ method: "eth_getTransactionReceipt", params: [txHash] });
+            
+            if(!!receipt2) {
+                updateWithdrawalSuccessfull(true);
+            }
         }catch(err){
             console.error(err);
         }
@@ -143,73 +175,133 @@ const Interface = () => {
 
     return (
         <div>
-            {
-                !!account ? (
-                    <div>
-                        <p>ChainId: {account.chainId}</p>
-                        <p>Wallet Address: {account.address}</p>
-                        <p>Balance: {account.balance} ETH</p>
-                    </div>
-                ) : (
-                    <div>
-                        <button onClick={connectMetamask}>Connect Metamask</button>
-                    </div>
-                )
-            }
+            <nav className="navbar navbar-nav fixed-top bg-dark text-light">
+                {
+                    !!account ? (
+                        <div className="container">
+                            <div className="navbar-left">
+                                <span><strong>ChainId:</strong></span>
+                                <br/>
+                                <span>{account.chainId}</span>
+                            </div>
+                            <div className="navbar-right">
+                                <span><strong>{account.address.slice(0, 12) + "..."}</strong></span>
+                                <br/>
+                                <span className="small">{account.balance.slice(0, 10) + ((account.balance.length > 10) ? ("...") : (""))} ETH</span>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="container">
+                            <div className="navbar-left"><h5>NFTA-Tornado</h5></div>
+                            <div className="navbar-right">
+                                <button 
+                                    className="btn btn-primary" 
+                                    onClick={connectMetamask}
+                                >Connect Metamask</button>
+                            </div>
+                        </div>
+                    )
+                }
 
-            <div>
-                <hr />
-            </div>
+                
+            </nav>
 
-            {
-                !!account ? (
-                    <div>
+            <div style={{height: "60px"}}></div>
+
+            <div className='container' style={{marginTop: 60 }}>
+                <div className='card mx-auto' style={{maxWidth: 450}}>
+                    <div className='card-body'>
+                        <div className='btn-group' style={{marginBottom: 20}}>
+                            {
+                                section === "Deposit"? (
+                                    <button className='btn btn-primary'>Deposit</button>
+                                ): (
+                                    <button onClick={() => {updateSection("Deposit");}} className='btn btn-outline-primary'>Deposit</button>
+                                )
+                            }
+                            {
+                                section === "Deposit"? (
+                                    <button onClick={() => {updateSection("Withdraw");}} className='btn btn-outline-primary'>Withdraw</button>
+                                ): (
+                                    <button className='btn btn-primary'>Withdraw</button>
+                                    
+                                )
+                            }
+                        </div>
+
                         {
-                            !!proofElements ? (
+                            section == "Deposit" && !!account && (
                                 <div>
-                                    <p><strong>Proof of Deposit</strong></p>
-                                    <div style={{ maxWidth: "100vw" , overflowWrap: "break-word"}}>
-                                        <span ref={(proofStringEl) => {updateProofStringEl(proofStringEl)}}>{proofElements}</span>
-                                    </div>
                                     {
-                                        !!proofStringEl && (
-                                            <button onClick={copyProof}>Copy Proof String</button>
+                                        !!proofElements ? (
+                                            <div>
+                                                <div className='alert alert-success'>
+                                                    <p><strong>Proof of Deposit</strong></p>
+                                                    <div className='p-1' style={{lineHeight: "12px"}}>
+                                                        <span style={{fontSize: 10}} ref={(proofStringEl) => {updateProofStringEl(proofStringEl)}}>{proofElements}</span>
+                                                    </div>
+                                                </div>
+                                                <button className='btn btn-success' onClick={copyProof}><span className='small'>Copy Proof String</span></button>
+                                                {
+                                                    (!!displayCopiedMessage) && (
+                                                        <span className='small'><strong className='p-2' style={{color: 'green'}}>Copied!</strong></span>
+                                                    )
+                                                }
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <p className='text-secondary'>Note: All deposits and withdrawals are of the same denomiation of 1 ETH.</p>
+                                                <button className='btn btn-success' onClick={depostEther}><span className='small'>Depost 1 ETH</span></button>
+                                            </div>
                                         )
                                     }
-                                    
                                 </div>
-                            ) : (
-                                <button onClick={depostEther}>Depost 1 ETH</button>
+                            ) 
+                        }
+
+                        {
+                            section != "Deposit" && !!account && (
+                                <div>
+                                    {
+                                        (withdrawalSuccessfull ) ? (
+                                            <div>
+                                                <div className='alert alert-success p-3'>
+                                                    <div >
+                                                        <span><strong>Success!</strong></span>
+                                                        <div style={{marginTop: 5}}>
+                                                            <span className='text-secondary'>
+                                                                Withdrawal Successful. you can check your wallet!
+                                                            </span>
+
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ): (
+                                            <div>
+                                                <div>
+                                                    <p className='text-secondary'>Note: All deposits and withdrawals are of the same denomiation of 1 ETH.</p>
+                                                    <div className='form-group'>
+                                                        <textarea className='form-control' style={{resize: "none"}} ref={(ta) => {updateTextArea(ta);} }></textarea>
+                                                    </div>
+                                                    <button className='btn btn-primary' onClick={withdraw}><span className='small'>Withdraw 1 ETH</span></button>
+                                                </div>
+                                            </div>
+                                        )
+                                    }
+                               </div>
+                            ) 
+                        }   
+                        {
+                            (!account) && (
+                                <div>
+                                    <p>Connect Your Wallet Please</p>
+                                </div>
                             )
                         }
-                        
                     </div>
-                ) : (
-                    <div>
-                        <p>You need to connect to Metamask to use this functionality</p>
-                    </div>
-                )
-            }
-            
-            <div>
-                <hr />
+                </div>
             </div>
-            
-            {
-                !!account ? (
-                    <div>
-                        <div>
-                            <textarea ref={(ta) => {updateTextArea(ta);} }></textarea>
-                        </div>
-                        <button onClick={withdraw}>Withdraw 1 ETH</button>
-                    </div>
-                ): (
-                    <div>
-                        <p>You need to connect to Metamask to use this functionality</p>
-                    </div>
-                )
-            }
-
         </div>
     )
 }
